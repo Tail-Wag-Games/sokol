@@ -2840,6 +2840,12 @@ SOKOL_GFX_API_DECL const void* sg_mtl_device(void);
 /* Metal: return __bridge-casted MTLRenderCommandEncoder in current pass (or zero if outside pass) */
 SOKOL_GFX_API_DECL const void* sg_mtl_render_command_encoder(void);
 
+/* FRAG related extensions */
+SOKOL_GFX_API_DECL void sg_set_buffer_used_frame(uint32_t buf_id, int64_t used_frame);
+SOKOL_GFX_API_DECL void sg_set_pipeline_used_frame(uint32_t pip_id, int64_t used_frame);
+SOKOL_GFX_API_DECL void sg_set_image_used_frame(uint32_t img_id, int64_t used_frame);
+SOKOL_GFX_API_DECL void sg_map_buffer(sg_buffer buf_id, int offset, const void* data, int num_bytes);
+
 #ifdef __cplusplus
 } /* extern "C" */
 
@@ -3468,6 +3474,7 @@ typedef struct {
     uint32_t append_frame_index;
     int num_slots;
     int active_slot;
+    int64_t used_frame;
 } _sg_buffer_common_t;
 
 _SOKOL_PRIVATE void _sg_buffer_common_init(_sg_buffer_common_t* cmn, const sg_buffer_desc* desc) {
@@ -16800,6 +16807,57 @@ SOKOL_API_IMPL const void* sg_mtl_render_command_encoder(void) {
     #else
         return 0;
     #endif
+}
+
+SOKOL_API_IMPL void sg_set_buffer_used_frame(uint32_t buf_id, int64_t used_frame) {
+    SOKOL_ASSERT(_sg.valid);
+    _sg_buffer_t* _buff = _sg_lookup_buffer(&_sg.pools, buf_id);
+    _buff->cmn.used_frame = used_frame;
+}
+
+SOKOL_API_IMPL void sg_set_pipeline_used_frame(uint32_t pip_id, int64_t used_frame) {
+    SOKOL_ASSERT(_sg.valid);
+    _sg_pipeline_t* _pip = _sg_lookup_pipeline(&_sg.pools, pip_id);
+    _pip->cmn.used_frame =_pip->shader->cmn.used_frame = used_frame;
+}
+
+SOKOL_API_IMPL void sg_set_image_used_frame(uint32_t img_id, int64_t used_frame) {
+    SOKOL_ASSERT(_sg.valid);
+    _sg_pipeline_t* _img = _sg_lookup_image(&_sg.pools, img_id);
+    _img->cmn.used_frame =_img->cmn.used_frame = used_frame;
+}
+
+SOKOL_API_IMPL void sg_map_buffer(sg_buffer buf_id, int offset, const void* data, int num_bytes)
+{
+    _sg_buffer_t* buf = _sg_lookup_buffer(&_sg.pools, buf_id.id);
+    if (buf) {
+        /* rewind append cursor in a new frame */
+        if (buf->cmn.map_frame_index != _sg.frame_index) {
+            buf->cmn.append_pos = 0;
+            buf->cmn.append_overflow = false;
+        }
+
+        if ((offset + num_bytes) > buf->cmn.size) {
+            buf->cmn.append_overflow = true;
+        }
+
+        if (buf->slot.state == SG_RESOURCESTATE_VALID) {
+            buf->cmn.append_pos = offset;    // alter append_pos, so we write at offset
+            if (_sg_validate_append_buffer(buf, data, num_bytes)) {
+                if (!buf->cmn.append_overflow && (num_bytes > 0)) {
+                    /* update and append and map on same buffer in same frame not allowed */
+                    SOKOL_ASSERT(buf->cmn.update_frame_index != _sg.frame_index);
+                    SOKOL_ASSERT(buf->cmn.append_frame_index != _sg.frame_index);
+                    _sg_append_buffer(buf, data, num_bytes,
+                                      buf->cmn.map_frame_index != _sg.frame_index);
+                    buf->cmn.map_frame_index = _sg.frame_index;
+                }
+            }
+        }
+    } else {
+        SOKOL_ASSERT("invalid buf_id\n");
+        SOKOL_ASSERT(false);
+    }
 }
 
 #ifdef _MSC_VER
